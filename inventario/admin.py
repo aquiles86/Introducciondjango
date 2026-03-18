@@ -41,9 +41,33 @@ class MuebleAdmin(admin.ModelAdmin):
 
 @admin.register(Pedido)
 class PedidoAdmin(admin.ModelAdmin):
-    list_display = ('mueble', 'cliente', 'tipo_pedido', 'estado', 'mostrar_costo_pedido', 'fecha')
+    list_display = ('mueble', 'cliente', 'tipo_pedido', 'mostrar_estado', 'mostrar_costo_pedido', 'fecha')
     list_filter = ('estado', 'tipo_pedido')
     actions = ['generar_lista_corte_consolidada']
+
+    def mostrar_estado(self, obj):
+        # 1. Obtenemos el nombre exacto que ves en el menú (el "label")
+        # Esto soluciona el problema de "Listo para Entrega"
+        nombre_estado = obj.get_estado_display()
+        
+        colores = {
+            'Pendiente': '#e74c3c',           # Rojo
+            'En Corte': '#3498db',            # Azul
+            'En Taller': '#f1c40f',           # Amarillo
+            'En Armado': '#9b59b6',           # Violeta
+            'Listo para Entrega': '#2ecc71',  # Verde claro
+            'Entregado': '#27ae60',           # Verde oscuro
+        }
+        
+        # 2. Buscamos el color. Si no coincide exacto, ponemos un Gris (#7f8c8d)
+        color_fondo = colores.get(nombre_estado, '#7f8c8d')
+        
+        # 3. El secreto: pasamos el COLOR y el NOMBRE para que el óvalo no salga vacío
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 5px 12px; border-radius: 15px; font-weight: bold; text-transform: uppercase; font-size: 10px; display: inline-block; min-width: 110px; text-align: center;">{}</span>',
+            color_fondo, nombre_estado
+        )
+    mostrar_estado.short_description = 'Estado'
 
     def mostrar_costo_pedido(self, obj):
         total = obj.mueble.costo_total_produccion * obj.cantidad
@@ -53,28 +77,22 @@ class PedidoAdmin(admin.ModelAdmin):
     @admin.action(description="🚀 Combinar pedidos y generar lista de corte")
     def generar_lista_corte_consolidada(self, request, queryset):
         from django.http import HttpResponse
-        
         texto = "LISTA DE CORTE PARA MADERERA (COMBINADA)\n"
         texto += "========================================\n\n"
-        
         area_total_acumulada = 0
         for pedido in queryset:
             texto += f"MUEBLE: {pedido.mueble.nombre} | Cantidad: {pedido.cantidad}\n"
+            from .models import Pieza 
             piezas = Pieza.objects.filter(mueble=pedido.mueble)
-            
             for p in piezas:
                 total_piezas = p.cantidad * pedido.cantidad
                 texto += f" - {p.nombre}: {p.largo} x {p.ancho} cm (Cant: {total_piezas})\n"
-            
-            # Calculamos la ocupación de este pedido específico
             area_total_acumulada += pedido.mueble.porcentaje_ocupacion * pedido.cantidad
             texto += "----------------------------------------\n"
-        
         texto += f"\nOCUPACIÓN ESTIMADA TOTAL: {area_total_acumulada:.2f}% de una placa base."
         texto += f"\nEQUIVALENTE A: {(area_total_acumulada/100):.1f} placas aprox."
-        
         response = HttpResponse(texto, content_type="text/plain; charset=utf-8")
-        response['Content-Disposition'] = 'attachment; filename="lista_corte_combinada.txt"'
+        response['Content-Disposition'] = 'attachment; filename="lista_corte_consolidada.txt"'
         return response
 
 # --- OTROS REGISTROS ---
