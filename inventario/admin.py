@@ -14,9 +14,13 @@ class RecetaInline(admin.TabularInline):
 
 @admin.register(Mueble)
 class MuebleAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'codigo', 'mostrar_ocupacion', 'precio_venta', 'mostrar_costo', 'mostrar_utilidad')
+    list_display = ('nombre', 'codigo', 'mostrar_ocupacion','mostrar_stock','precio_venta', 'mostrar_costo', 'mostrar_utilidad')
     inlines = [PiezaInline, RecetaInline]
     search_fields = ('nombre', 'codigo')
+    @property
+    def porcentaje_placa(self):
+        # Multiplica el porcentaje del mueble por la cantidad pedida
+        return self.mueble.porcentaje_ocupacion * self.cantidad
 
     def mostrar_ocupacion(self, obj):
         porcentaje = obj.porcentaje_ocupacion
@@ -36,6 +40,14 @@ class MuebleAdmin(admin.ModelAdmin):
         utilidad = obj.precio_venta - obj.costo_total_produccion
         return f"Gs. {utilidad:,.0f}"
     mostrar_utilidad.short_description = 'Ganancia'
+    def mostrar_stock(self, obj):
+        # Si no hay stock, rojo. Si hay, verde.
+        color = "red" if obj.stock_disponible <= 0 else "green"
+        return format_html(
+            '<b style="color: {};">{} un.</b>',
+            color, obj.stock_disponible
+        )
+    mostrar_stock.short_description = 'Stock'
 
 # --- CONFIGURACIÓN DE PEDIDOS (La herramienta de combinación) ---
 
@@ -46,26 +58,28 @@ class PedidoAdmin(admin.ModelAdmin):
     actions = ['generar_lista_corte_consolidada']
 
     def mostrar_estado(self, obj):
-        # 1. Obtenemos el nombre exacto que ves en el menú (el "label")
-        # Esto soluciona el problema de "Listo para Entrega"
-        nombre_estado = obj.get_estado_display()
-        
+        # 1. Usamos las claves exactas de tu modelo (en minúsculas)
         colores = {
-            'Pendiente': '#e74c3c',           # Rojo
-            'En Corte': '#3498db',            # Azul
-            'En Taller': '#f1c40f',           # Amarillo
-            'En Armado': '#9b59b6',           # Violeta
-            'Listo para Entrega': '#2ecc71',  # Verde claro
-            'Entregado': '#27ae60',           # Verde oscuro
+            'pendiente': '#e74c3c',   # Rojo
+            'en_corte': '#3498db',    # Azul
+            'en_taller': '#f1c40f',   # Amarillo
+            'en_armado': '#9b59b6',   # Violeta
+            'listo': '#2ecc71',       # Verde claro
+            'entregado': '#27ae60',   # Verde oscuro
+            'cancelado': '#34495e',   # Gris oscuro
         }
         
-        # 2. Buscamos el color. Si no coincide exacto, ponemos un Gris (#7f8c8d)
-        color_fondo = colores.get(nombre_estado, '#7f8c8d')
+        # 2. Buscamos el color usando la clave 'obj.estado'
+        color_fondo = colores.get(obj.estado, '#7f8c8d')
         
-        # 3. El secreto: pasamos el COLOR y el NOMBRE para que el óvalo no salga vacío
+        # 3. get_estado_display() nos da el nombre bonito (ej: "Listo para Entrega")
+        texto_bonito = obj.get_estado_display()
+        
         return format_html(
-            '<span style="background-color: {}; color: white; padding: 5px 12px; border-radius: 15px; font-weight: bold; text-transform: uppercase; font-size: 10px; display: inline-block; min-width: 110px; text-align: center;">{}</span>',
-            color_fondo, nombre_estado
+            '<span style="background-color: {}; color: white; padding: 5px 12px; border-radius: 15px; '
+            'font-weight: bold; text-transform: uppercase; font-size: 10px; display: inline-block; '
+            'min-width: 110px; text-align: center;">{}</span>',
+            color_fondo, texto_bonito
         )
     mostrar_estado.short_description = 'Estado'
 
@@ -74,6 +88,23 @@ class PedidoAdmin(admin.ModelAdmin):
         return f"Gs. {total:,.0f}"
     mostrar_costo_pedido.short_description = 'Costo Total'
 
+# Dentro de la clase PedidoAdmin en admin.py
+    actions = ['calcular_placas_necesarias']
+
+    @admin.action(description="Calcular ocupación total de placa")
+    def calcular_placas_necesarias(self, request, queryset):
+        # Sumamos el porcentaje de todos los pedidos que tildaste
+        total_porcentaje = sum(p.porcentaje_placa for p in queryset)
+        
+        # Calculamos cuántas placas son (cada 100% es una placa)
+        placas_enteras = total_porcentaje / 100
+        
+        # Mostramos el mensaje arriba en la pantalla
+        self.message_user(
+            request, 
+            f"📊 OPTIMIZACIÓN: Los pedidos seleccionados ocupan el {total_porcentaje:.2f}% de la placa. "
+            f"Necesitás preparar {placas_enteras:.2f} placas aproximadamente."
+        )
     @admin.action(description="🚀 Combinar pedidos y generar lista de corte")
     def generar_lista_corte_consolidada(self, request, queryset):
         from django.http import HttpResponse

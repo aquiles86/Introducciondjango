@@ -1,5 +1,9 @@
 from django.db import models
 from decimal import Decimal
+from django.db.models import Sum
+from django.core.exceptions import ValidationError
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
 
 class Insumo(models.Model):
     UNIDADES = (
@@ -93,17 +97,57 @@ class Pedido(models.Model):
     ESTADOS = (
         ('pendiente', 'Pendiente'),
         ('en_corte', 'En Corte'),
-        ('en_armado', 'En Taller'),
+        ('en_taller', 'En Taller'),
+        ('en_armado', 'En Armado'),
         ('listo', 'Listo para Entrega'),
         ('entregado', 'Entregado'),
+        ('cancelado', 'Cancelado'),
     )
+    
     TIPOS = (
         ('cliente', 'Venta Directa'),
         ('stock', 'Producción de Sobrante (Stock)'),
     )
+
     cliente = models.CharField(max_length=200)
     mueble = models.ForeignKey(Mueble, on_delete=models.PROTECT)
     cantidad = models.PositiveIntegerField(default=1)
     estado = models.CharField(max_length=20, choices=ESTADOS, default='pendiente')
     tipo_pedido = models.CharField(max_length=20, choices=TIPOS, default='cliente')
     fecha = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def porcentaje_placa(self):
+        # Multiplica el porcentaje del mueble por la cantidad pedida
+        return self.mueble.porcentaje_ocupacion * self.cantidad
+
+    def clean(self):
+        if self.tipo_pedido == 'cliente' and self.estado == 'entregado':
+            if self.mueble.stock_disponible < self.cantidad:
+                raise ValidationError(
+                    f"🚫 No hay stock físico de {self.mueble.nombre} para entregar. "
+                    f"Primero terminá la producción de stock para este mueble."
+                )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+# SEÑAL DE STOCK (Al final del archivo, sin espacios al inicio)
+@receiver([post_save, post_delete], sender=Pedido)
+def actualizar_inventario(sender, instance, **kwargs):
+    mueble = instance.mueble
+    # Suma producción de stock que esté lista o entregada
+    produccion = Pedido.objects.filter(
+        mueble=mueble, 
+        tipo_pedido='stock', 
+        estado__in=['listo', 'entregado']
+    ).aggregate(total=Sum('cantidad'))['total'] or 0
+    
+    # Resta ventas directas que no estén canceladas
+    ventas = Pedido.objects.filter(
+        mueble=mueble, 
+        tipo_pedido='cliente'
+    ).exclude(estado='cancelado').aggregate(total=Sum('cantidad'))['total'] or 0
+    
+    mueble.__class__.objects.filter(pk=mueble.pk).update(stock_disponible=produccion - ventas)
