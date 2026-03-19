@@ -53,7 +53,7 @@ class MuebleAdmin(admin.ModelAdmin):
 
 @admin.register(Pedido)
 class PedidoAdmin(admin.ModelAdmin):
-    list_display = ('mueble', 'cliente', 'tipo_pedido', 'mostrar_estado', 'mostrar_costo_pedido', 'fecha')
+    list_display = ('mueble', 'cliente', 'tipo_pedido', 'mostrar_estado','mostrar_porcentaje_placa', 'mostrar_costo_pedido', 'fecha')
     list_filter = ('estado', 'tipo_pedido')
     actions = ['generar_lista_corte_consolidada']
 
@@ -125,6 +125,20 @@ class PedidoAdmin(admin.ModelAdmin):
         response = HttpResponse(texto, content_type="text/plain; charset=utf-8")
         response['Content-Disposition'] = 'attachment; filename="lista_corte_consolidada.txt"'
         return response
+    def mostrar_porcentaje_placa(self, obj):
+        # 1. Obtenemos el número (aseguramos que sea 0 si no existe)
+        valor = obj.mueble.porcentaje_ocupacion or 0
+        
+        # 2. Lo convertimos a texto con 2 decimales ANTES de pasarlo al HTML
+        texto_formateado = f"{valor:.2f}% de la placa"
+        
+        # 3. Lo mostramos con color
+        return format_html(
+            '<span style="color: #28a745; font-weight: bold;">{}</span>',
+            texto_formateado
+        )
+    
+    mostrar_porcentaje_placa.short_description = '% Uso Placa'
 
 # --- OTROS REGISTROS ---
 admin.site.register(Insumo)

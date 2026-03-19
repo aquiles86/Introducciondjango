@@ -137,17 +137,24 @@ class Pedido(models.Model):
 @receiver([post_save, post_delete], sender=Pedido)
 def actualizar_inventario(sender, instance, **kwargs):
     mueble = instance.mueble
-    # Suma producción de stock que esté lista o entregada
+    
+    # 1. SUMAMOS TODO LO FABRICADO:
+    # Si un pedido (sea Venta o Stock) está 'listo' o 'entregado', 
+    # significa que el mueble ya existe físicamente.
     produccion = Pedido.objects.filter(
-        mueble=mueble, 
-        tipo_pedido='stock', 
+        mueble=mueble,
         estado__in=['listo', 'entregado']
     ).aggregate(total=Sum('cantidad'))['total'] or 0
-    
-    # Resta ventas directas que no estén canceladas
+
+    # 2. RESTAMOS LAS VENTAS ENTREGADAS:
+    # Solo restamos cuando el cliente ya se llevó el mueble del taller.
     ventas = Pedido.objects.filter(
-        mueble=mueble, 
-        tipo_pedido='cliente'
-    ).exclude(estado='cancelado').aggregate(total=Sum('cantidad'))['total'] or 0
-    
-    mueble.__class__.objects.filter(pk=mueble.pk).update(stock_disponible=produccion - ventas)
+        mueble=mueble,
+        tipo_pedido='cliente',
+        estado='entregado'
+    ).aggregate(total=Sum('cantidad'))['total'] or 0
+
+    # 3. RESULTADO FINAL:
+    # Stock = Todo lo que se hizo - Todo lo que se llevaron.
+    nuevo_stock = produccion - ventas
+    mueble.__class__.objects.filter(pk=mueble.pk).update(stock_disponible=nuevo_stock)
