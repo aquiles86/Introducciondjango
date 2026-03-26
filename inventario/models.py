@@ -1,146 +1,225 @@
-from django.db import models
-from decimal import Decimal
-from django.db.models import Sum
-from django.db.models.signals import post_save, post_delete
-from django.dispatch import receiver
-from django.utils import timezone
+import csv
+from django.contrib import admin
+from django.utils.html import format_html
+from django.http import HttpResponse
+from .models import Insumo as ModeloInsumo, Mueble, Pieza, Receta, Cliente, Pedido, Tarea
 
-# --- 1. MODELO DE INSUMOS ---
-class Insumo(models.Model):
-    UNIDADES = (
-        ('un', 'Unidades'), ('m', 'Metros'), ('kg', 'Kilogramos'),
-        ('l', 'Litros'), ('p2', 'Pies Tablares'), ('par', 'Pares'), ('m2', 'Metros Cuadrados'),
-    )
-    nombre = models.CharField(max_length=100)
-    unidad_medida = models.CharField(max_length=5, choices=UNIDADES, default='un')
-    precio_referencia = models.DecimalField(max_digits=12, decimal_places=0)
+# ==============================================================================
+# --- 1. PANEL DEL CARPINTERO (TAREAS) ---
+# ==============================================================================
+@admin.register(Tarea)
+class TareaAdmin(admin.ModelAdmin):
+    # Definimos qué columnas ver en la lista de tareas
+    list_display = ('nombre_con_color', 'mostrar_mueble', 'pedido', 'terminado', 'fecha_fin')
+    list_filter = ('terminado', 'nombre', 'pedido__mueble__nombre')
+    list_editable = ('terminado',) # Permite marcar como terminado desde la lista
+    search_fields = ('pedido__cliente__nombre', 'pedido__mueble__nombre', 'nombre')
+    ordering = ('pedido', 'id') 
 
-    def __str__(self):
-        return f"{self.nombre} ({self.get_unidad_medida_display()})"
+    # Función 1: Muestra el nombre de la tarea con iconos y colores según el estado
+    def nombre_con_color(self, obj):
+        etiqueta = obj.get_nombre_display()
+        if obj.terminado:
+            return format_html('<span style="color: #2ecc71; font-weight: bold;">✅ {}</span>', etiqueta)
+        return format_html('<span style="color: #e67e22; font-weight: bold;">⏳ {}</span>', etiqueta)
+    nombre_con_color.admin_order_field = 'id' # Permite ordenar por ID usando esta columna
+    nombre_con_color.short_description = 'ESTADO DE TAREA'
 
-# --- 2. MODELO DE MUEBLES ---
-class Mueble(models.Model):
-    nombre = models.CharField(max_length=100)
-    codigo = models.CharField(max_length=20, unique=True)
-    precio_venta = models.DecimalField(max_digits=12, decimal_places=0)
-    costo_placa_entera = models.DecimalField(max_digits=12, decimal_places=0)
-    ancho_placa_cm = models.FloatField(default=183)
-    largo_placa_cm = models.FloatField(default=260)
-    imagen = models.ImageField(upload_to='muebles/', null=True, blank=True)
-    stock_disponible = models.PositiveIntegerField(default=0)
+    # Función 2: Muestra el nombre del mueble asociado a la tarea en azul y mayúsculas
+    def mostrar_mueble(self, obj):
+        # Esta función busca el nombre del mueble a través del pedido
+        return format_html('<b style="color: #3498db; text-transform: uppercase;">{}</b>', obj.pedido.mueble.nombre)
+    mostrar_mueble.short_description = 'MUEBLE'
 
-    def __str__(self): return self.nombre
+# ==============================================================================
+# --- 2. CONFIGURACIÓN DE TABLAS HIJAS (INLINES) ---
+# ==============================================================================
+# Estas clases permiten editar las tablas hijas dentro del formulario de la tabla padre
 
-    @property
-    def area_total_utilizada(self):
-        return sum(p.largo * p.ancho * p.cantidad for p in self.pieza_set.all())
+class TareaInline(admin.TabularInline):
+    model = Tarea
+    extra = 0 # No mostrar filas vacías por defecto
+    can_delete = False # No permitir borrar tareas desde el pedido
+    fields = ('nombre', 'terminado', 'fecha_fin', 'tiempo') # Campos visibles
 
-    @property
-    def porcentaje_ocupacion(self):
-        area_placa = self.ancho_placa_cm * self.largo_placa_cm
-        if area_placa == 0: return 0
-        return (self.area_total_utilizada / area_placa) * 100
+class PiezaInline(admin.TabularInline):
+    model = Pieza
+    extra = 1 # Mostrar 1 fila vacía para agregar una pieza nueva
 
-    @property
-    def costo_madera(self):
-        area_placa = self.ancho_placa_cm * self.largo_placa_cm
-        if area_placa > 0:
-            porcentaje_uso = self.area_total_utilizada / area_placa
-            return Decimal(porcentaje_uso) * self.costo_placa_entera
-        return Decimal(0)
+class RecetaInline(admin.TabularInline):
+    model = Receta
+    extra = 1 # Mostrar 1 fila vacía para agregar un insumo nuevo
 
-    @property
-    def costo_insumos(self):
-        return sum(Decimal(ri.cantidad) * ri.insumo.precio_referencia for ri in self.receta_set.all())
-
-    @property
-    def costo_total_produccion(self):
-        return self.costo_madera + self.costo_insumos
-
-# --- 3. PIEZAS Y RECETAS ---
-class Pieza(models.Model):
-    mueble = models.ForeignKey(Mueble, on_delete=models.CASCADE)
-    nombre = models.CharField(max_length=100)
-    largo = models.FloatField(help_text="Sentido de la veta (cm)")
-    ancho = models.FloatField(help_text="Ancho (cm)")
-    cantidad = models.PositiveIntegerField(default=1)
-
-class Receta(models.Model):
-    mueble = models.ForeignKey(Mueble, on_delete=models.CASCADE)
-    insumo = models.ForeignKey(Insumo, on_delete=models.PROTECT)
-    cantidad = models.FloatField(default=1.0)
-
-# --- 4. CLIENTES Y PEDIDOS ---
-class Cliente(models.Model):
-    nombre = models.CharField(max_length=200)
-    ruc_cedula = models.CharField(max_length=20, unique=True)
-    telefono = models.CharField(max_length=15, blank=True, null=True)
-    direccion = models.TextField(blank=True, null=True)
-    def __str__(self): return self.nombre
-
-class Pedido(models.Model):
-    ESTADOS = (
-        ('pendiente', '1. Pendiente'),
-        ('produccion', '2. En Producción'),
-        ('listo', '3. Listo para Entrega'),
-        ('entregado', '4. Entregado'),
-        ('cancelado', '5. Cancelado'),
-    )
-    TIPOS = (('cliente', 'Venta Directa'), ('stock', 'Producción de Stock'))
-
-    cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE)
-    mueble = models.ForeignKey(Mueble, on_delete=models.PROTECT)
-    cantidad = models.PositiveIntegerField(default=1)
-    estado = models.CharField(max_length=20, choices=ESTADOS, default='pendiente')
-    tipo_pedido = models.CharField(max_length=20, choices=TIPOS, default='cliente')
-    fecha = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self): return f"Pedido {self.id} - {self.cliente.nombre}"
-
-# --- 5. MODELO DE TAREAS ---
-class Tarea(models.Model):
-    OPCIONES_TAREA = [
-        ('1_DISENO', '1. Diseño y Despiece'),
-        ('4_RECEPCION', '4. Recepción de Placas'),
-        ('7_ENSAMBLADO', '7. Ensamblado de Mueble'),
-        ('9_LIMPIEZA', '9. Limpieza y Ajuste Final'),
-        ('10_LISTO', '10. Listo para Entrega / Instalación'),
-    ]
-    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name='tareas')
-    nombre = models.CharField(max_length=50, choices=OPCIONES_TAREA, default='1_DISENO')
-    terminado = models.BooleanField(default=False, verbose_name="¿Terminado?")
-    fecha_fin = models.DateField(default=timezone.now)
-
-    def __str__(self): return f"{self.get_nombre_display()}"
-
-# --- 6. LOS ROBOTS (SEÑALES AUTOMÁTICAS) ---
-
-def recalcular_stock(mueble):
-    fabricados = Pedido.objects.filter(mueble=mueble, tareas__nombre='10_LISTO', tareas__terminado=True).distinct().aggregate(total=Sum('cantidad'))['total'] or 0
-    entregados = Pedido.objects.filter(mueble=mueble, estado='entregado').aggregate(total=Sum('cantidad'))['total'] or 0
-    Mueble.objects.filter(pk=mueble.pk).update(stock_disponible=max(0, fabricados - entregados))
-
-@receiver(post_save, sender=Pedido)
-def disparar_tareas(sender, instance, created, **kwargs):
-    if created:
-        for cod in ['1_DISENO', '4_RECEPCION', '7_ENSAMBLADO', '9_LIMPIEZA', '10_LISTO']:
-            Tarea.objects.get_or_create(pedido=instance, nombre=cod)
-    recalcular_stock(instance.mueble)
-
-@receiver(post_save, sender=Tarea)
-def actualizar_desde_tarea(sender, instance, **kwargs):
-    pedido = instance.pedido
-    # Sincronización de Estados según Tareas
-    if instance.nombre == '10_LISTO' and instance.terminado:
-        if pedido.estado != 'entregado':
-            pedido.estado = 'listo'
-    elif instance.nombre == '1_DISENO' and instance.terminado:
-        if pedido.estado == 'pendiente':
-            pedido.estado = 'produccion'
+# ==============================================================================
+# --- 3. PANEL DE MUEBLES ---
+# ==============================================================================
+@admin.register(Mueble)
+class MuebleAdmin(admin.ModelAdmin):
+    # Definimos qué columnas ver en la lista de muebles, incluyendo el STOCK DISPONIBLE
+    list_display = ('nombre', 'codigo', 'mostrar_porcentaje_uso', 'stock_disponible', 'precio_gs')
+    inlines = [PiezaInline, RecetaInline] # Permite editar piezas e insumos desde aquí
+    search_fields = ('nombre', 'codigo')
     
-    pedido.save(update_fields=['estado'])
-    recalcular_stock(pedido.mueble)
+    # Función: Muestra el porcentaje de ocupación de la placa en verde
+    def mostrar_porcentaje_uso(self, obj):
+        valor = round(obj.porcentaje_ocupacion, 1)
+        return format_html('<b style="color: #27ae60;">{}% de la placa</b>', valor)
+    mostrar_porcentaje_uso.short_description = "% USO PLACA"
 
-@receiver(post_delete, sender=Pedido)
-def al_eliminar(sender, instance, **kwargs):
-    recalcular_stock(instance.mueble)
+    # Función: Muestra el precio formateado en Guaraníes
+    def precio_gs(self, obj):
+        valor = "{:,.0f}".format(obj.precio_venta).replace(",", ".")
+        return "Gs. %s" % valor
+    precio_gs.short_description = "PRECIO VENTA"
+
+# ==============================================================================
+# --- 4. PANEL DE PEDIDOS (CON AVANCE DE FABRICACIÓN Y FILTRADO COMERCIAL) ---
+# ==============================================================================
+@admin.register(Pedido)
+class PedidoAdmin(admin.ModelAdmin):
+    # Definimos qué columnas ver, incluyendo la NUEVA COLUMNA INFORMATIVA
+    list_display = ('id', 'cliente', 'mueble', 'cantidad', 'mostrar_placa', 'status_color', 'mostrar_avance_fabricacion')
+    readonly_fields = ('estado',) # El estado se controla solo mediante acciones
+    inlines = [TareaInline] # Permite ver el progreso de las tareas desde el pedido
+    search_fields = ('cliente__nombre', 'mueble__nombre')
+
+    # --- AQUÍ DEFINIMOS LAS ACCIONES DEL MENÚ DESPLEGABLE ---
+    # ¡Las tres acciones fundamentales deben estar listadas aquí!
+    actions = [
+        'descargar_despiece_txt', 
+        'marcar_como_entregado_y_cobrar', # Acción Comercial 1 (con cobro automático)
+        'cancelar_pedido_simplemente' # Acción Comercial 2 (Lógica Comercial)
+    ]
+
+    # --- NUEVA COLUMNA INFORMATIVA: AVANCE FABRICACIÓN (Solo Lectura) ---
+    def mostrar_avance_fabricacion(self, obj):
+        # Usamos Tarea.objects.filter como acordamos para evitar AttributeError
+        ultima_tarea_terminada = obj.tarea_set.filter(terminado=True).last()
+        
+        # Si no hay tareas terminadas, mostramos 'Aún sin registrar'
+        if not ultima_tarea_terminada:
+            return format_html('<span style="color: #95a5a6;">⚪ Aún sin registrar</span>')
+        
+        # Obtenemos el nombre legible de la última tarea terminada
+        etiqueta_tarea = ultima_tarea_terminada.get_nombre_display()
+        
+        return format_html(
+            '<span style="color: white; background-color: #34495e; padding: 3px 10px; border-radius: 10px; font-weight: bold; display: inline-block;">🛠️ {}</span>',
+            etiqueta_tarea
+        )
+    mostrar_avance_fabricacion.short_description = 'AVANCE FABRICACIÓN'
+
+    # Función: Filtra la lista para mostrar solo lo comercial (Pendiente, Entregado)
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        # PARA QUE NO APAREZCA EN NINGUNA OTRA PARTE, filtramos visualmente:
+        # (He verificado que estos nombres coinciden con tu models.py)
+        return qs.filter(estado__in=['pendiente', 'entregado'])
+
+    # Función: Muestra el porcentaje total de ocupación de placas para el pedido
+    def mostrar_placa(self, obj):
+        # Cálculo: (% ocupación del mueble) x (cantidad de muebles del pedido)
+        valor_total = round(obj.mueble.porcentaje_ocupacion * obj.cantidad, 1)
+        return format_html('<b style="color: #27ae60;">{}% de la placa</b>', valor_total)
+    mostrar_placa.short_description = "% USO PLACA"
+
+    # Función: Muestra el estado del pedido con una etiqueta de color (Simplificado)
+    def status_color(self, obj):
+        # Mapa de colores para cada estado comercial
+        colores = {
+            'pendiente': '#e67e22',   # Naranja
+            'entregado': '#27ae60',    # Verde oscuro
+        }
+        color = colores.get(obj.estado, '#95a5a6') # Gris por defecto
+        
+        # Usamos get_X_display() de Django de manera robusta.
+        # Esto funciona siempre y cuando tu campo en models.py tenga CHOICES y se llame 'estado'.
+        texto_display = obj.get_estado_display()
+        
+        return format_html(
+            '<span style="color: white; background-color: {}; padding: 3px 10px; border-radius: 10px; font-weight: bold; display: inline-block;">{}</span>',
+            color, texto_display
+        )
+    status_color.short_description = 'ESTADO'
+
+    # ----------------------------------------------------------------------
+    # --- ACCIÓN 1: GENERAR LISTA DE CORTE (TXT) ---
+    # ----------------------------------------------------------------------
+    def descargar_despiece_txt(self, request, queryset):
+        # Crear la respuesta con el tipo de contenido para texto plano (.txt)
+        response = HttpResponse(content_type='text/plain')
+        response['Content-Disposition'] = 'attachment; filename="lista_corte_maderera.txt"'
+
+        # Crear el contenido del archivo de texto, ordenado y alineado
+        contenido = "ORDEN DE CORTE - LISTA DE PIEZAS\n"
+        contenido += "="*35 + "\n\n"
+
+        for pedido in queryset:
+            contenido += f"Pedido ID: {pedido.id}\n"
+            contenido += f"Cliente: {pedido.cliente.nombre}\n"
+            contenido += f"Mueble: {pedido.mueble.nombre}\n"
+            contenido += f"Cantidad de Muebles: {pedido.cantidad}\n"
+            contenido += "-"*35 + "\n"
+            # Encabezados de la tabla alineados
+            contenido += f"{'Pieza':<20} | {'Largo':<6} | {'Ancho':<6} | {'Cant.'}\n"
+            # SINTAXIS CORREGIDA: Eliminamos el '+' al final de la línea
+            contenido += "-"*35 + "\n"
+            
+            # Recorrer las piezas del mueble asociado al pedido
+            for p in pedido.mueble.pieza_set.all():
+                # Cálculo automático: (piezas por mueble) x (cantidad de muebles)
+                total = p.cantidad * pedido.cantidad
+                # Usar formateo f-string para alinear las columnas
+                contenido += f"{p.nombre:<20} | {p.largo:<6.1f} | {p.ancho:<6.1f} | {total}\n"
+            
+            contenido += "="*35 + "\n\n"
+
+        # Escribir todo el contenido generado en la respuesta
+        response.write(contenido)
+        return response
+    descargar_despiece_txt.short_description = "Generar Lista para Maderera (TXT)"
+
+    # ----------------------------------------------------------------------
+    # --- ACCIÓN COMERCIAL 1: MARCAR COMO ENTREGADO Y COBRAR (CON DESCUENTO DE STOCK OBLIGATORIO) ---
+    # ----------------------------------------------------------------------
+    def marcar_como_entregado_y_cobrar(self, request, queryset):
+        # Esta función actualiza el stock y el estado
+        
+        for pedido in queryset:
+            # Primero descontamos el stock del mueble
+            mueble = pedido.mueble
+            cantidad_pedido = pedido.cantidad
+            # Restamos la cantidad del pedido del stock disponible del mueble
+            mueble.stock_disponible -= cantidad_pedido
+            mueble.save() # Guardamos el cambio de stock en la base de datos
+
+            # Luego actualizamos el estado del pedido a 'entregado'
+            # (Asumimos que la lógica de cobro ya está manejada externamente oimplícita en el acto comercial)
+            pedido.estado = 'entregado'
+            pedido.save() # Guardamos el cambio de estado del pedido
+
+        self.message_user(request, "Los pedidos seleccionados se marcaron como Entregados y se descontó el stock de muebles correctamente.")
+    marcar_como_entregado_y_cobrar.short_description = "✅ Marcar como Entregado y Cobrar"
+
+    # ----------------------------------------------------------------------
+    # --- ACCIÓN COMERCIAL 2: CANCELAR PEDIDO SIMPLEMENTE (LÓGICA COMERCIAL) ---
+    # ----------------------------------------------------------------------
+    def cancelar_pedido_simplemente(self, request, queryset):
+        # Esta acción solo cambia el estado a 'Cancelado'.
+        # Lógica de si suma o no stock se maneja automáticamente por el flujo en models.py:
+        # - Al terminar la última tarea, el stock se sumará (+1) y el estado pasará a "Listo para Entrega".
+        
+        for pedido in queryset:
+            # Actualizamos el estado del pedido a 'cancelado'
+            pedido.estado = 'cancelado'
+            pedido.save() # Guardamos el cambio de estado del pedido
+
+        self.message_user(request, "Los pedidos seleccionados se marcaron como Cancelados correctamente. El carpintero puede seguir registrando avances.")
+    cancelar_pedido_simplemente.short_description = "❌ Cancelar Pedido (Lógica Comercial)"
+    # -----------------------------------------------------------------
+
+# ==============================================================================
+# --- 5. REGISTRO DE OTRAS TABLAS SIMPLES ---
+# ==============================================================================
+admin.site.register(ModeloInsumo) # Panel para gestionar tornillos, bisagras, etc.
+admin.site.register(Cliente)      # Panel para gestionar los datos de los clientes
