@@ -1,0 +1,66 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Panel de Taller - Carpintería</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f4f4; padding: 15px; color: #333; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 8px solid #28a745; }
+        .btn { display: inline-block; padding: 12px; margin: 8px 4px; border: 1px solid #ccc; border-radius: 8px; text-decoration: none; color: black; font-weight: bold; font-size: 14px; text-align: center; min-width: 100px; }
+        .hecho { background: #28a745; border-color: #218838; color: white; }
+        .pendiente { background: #ffc107; border-color: #e0a800; color: #333; }
+        .logout-btn { background: #dc3545; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; }
+        hr { border: 0; border-top: 1px solid #eee; margin: 15px 0; }
+        .info-pedido { margin-bottom: 10px; font-size: 1.1em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛠️ Tareas del Taller</h1>
+        <form action="{% url 'salir' %}" method="post">
+            {% csrf_token %}
+            <button type="submit" class="logout-btn">Salir</button>
+        </form>
+    </div>
+
+    <p>Operario actual: <strong>{{ request.user.username }}</strong></p>
+    
+    {% for ot in ordenes %}
+    <div class="card">
+        <div class="info-pedido">
+            <strong>Cliente/Producto:</strong> {{ ot.pedido }} <br>
+            <small>Iniciado: {{ ot.fecha_inicio|date:"d/m/Y" }}</small>
+        </div>
+        <hr>
+        <div style="display: flex; flex-wrap: wrap; justify-content: center;">
+            <a href="{% url 'marcar_tarea' ot.id 'corte' %}" class="btn {% if ot.corte %}hecho{% else %}pendiente{% endif %}">
+               {% if ot.corte %}✅{% else %}🪚{% endif %} Corte
+            </a>
+            <a href="{% url 'marcar_tarea' ot.id 'canteado' %}" class="btn {% if ot.canteado %}hecho{% else %}pendiente{% endif %}">
+                {% if ot.canteado %}✅{% else %}📏{% endif %} Canteado
+            </a>
+            <a href="{% url 'marcar_tarea' ot.id 'armado' %}" class="btn {% if ot.armado %}hecho{% else %}pendiente{% endif %}">
+                {% if ot.armado %}✅{% else %}🔨{% endif %} Armado
+            </a>
+            <a href="{% url 'marcar_tarea' ot.id 'limpieza' %}" class="btn {% if ot.limpieza %}hecho{% else %}pendiente{% endif %}">
+                {% if ot.limpieza %}✅{% else %}🧹{% endif %} Limpieza
+            </a>
+            <a href="{% url 'marcar_tarea' ot.id 'empaquetado' %}" class="btn {% if ot.empaquetado %}hecho{% else %}pendiente{% endif %}">
+                {% if ot.empaquetado %}✅{% else %}📦{% endif %} Empaquetado
+            </a>
+        </div>
+    </div>
+    {% empty %}
+    <div style="text-align: center; padding: 50px; background: white; border-radius: 12px;">
+        <h3>🙌 ¡Todo al día!</h3>
+        <p>No tienes tareas pendientes asignadas.</p>
+    </div>
+    {% endfor %}
+
+    <footer style="text-align: center; margin-top: 40px; color: #888;">
+        <small>Sistema de Gestión de Carpintería - Tesis 2026</small>
+    </footer>
+</body>
+</html>

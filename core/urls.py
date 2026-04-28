@@ -14,9 +14,24 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+"""
+Configuración de URLs principal del proyecto
+"""
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
+from inventario.views import salir_limpio # Tu función personalizada
 
 urlpatterns = [
+    # 1. El Admin se queda con su propia lógica interna
     path('admin/', admin.site.urls),
+    
+    path('inventario/', include('inventario.urls')),
+
+    # 2. Solo este 'salir' mandará al login de operarios
+    # Es el que usa tu botón {% url 'salir' %}
+    path('logout-taller/', salir_limpio, name='salir'),
 ]
+admin.site.site_header = "Sistema de Gestion de Carpinteria"
+admin.site.site_title = "Portal de Gestión"
+admin.site.index_title = "Panel de Control - Inventario y Producción"
+# Personalización de la interfaz del Admin
