@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError 
 
+
 # ==============================================================================
 # --- 1. MODELO DE INSUMOS ---
 # ==============================================================================
@@ -20,7 +21,7 @@ class Insumo(models.Model):
         return f"{self.nombre} ({self.get_unidad_medida_display()})"
 
 # ==============================================================================
-# --- 2. MODELO DE MUEBLES (CON GALERÍA) ---
+# --- 2. MODELO DE MUEBLES
 # ==============================================================================
 class Mueble(models.Model):
     nombre = models.CharField(max_length=100)
@@ -41,33 +42,34 @@ class Mueble(models.Model):
     def porcentaje_ocupacion(self):
         area_placa = self.ancho_placa_cm * self.largo_placa_cm
         if area_placa == 0: return 0
-        return (self.area_total_utilizada / area_placa) * 100
+        return round((self.area_total_utilizada / area_placa) * 100, 2)
 
     @property
     def costo_madera(self):
         area_placa = self.ancho_placa_cm * self.largo_placa_cm
         if area_placa > 0:
             porcentaje_uso = self.area_total_utilizada / area_placa
-            return Decimal(porcentaje_uso) * self.costo_placa_entera
-        return Decimal(0)
+            resultado = Decimal(porcentaje_uso) * self.costo_placa_entera
+            return int(resultado) # Entero para Guaraníes
+        return 0
 
     @property
     def costo_insumos(self):
-        return sum(Decimal(ri.cantidad) * ri.insumo.precio_referencia for ri in self.receta_set.all())
+        total = sum(Decimal(ri.cantidad) * ri.insumo.precio_referencia for ri in self.receta_set.all())
+        return int(total)
 
     @property
     def costo_total_produccion(self):
         return self.costo_madera + self.costo_insumos
 
-# --- NUEVO: MODELO PARA MÚLTIPLES FOTOS ---
+# --- CLASE QUE FALTABA PARA EL ERROR DE IMPORTACIÓN ---
 class FotoMueble(models.Model):
     mueble = models.ForeignKey(Mueble, related_name='fotos', on_delete=models.CASCADE)
     imagen = models.ImageField(upload_to='muebles/galeria/')
     descripcion = models.CharField(max_length=100, blank=True, null=True)
 
-    class Meta:
-        verbose_name = "Foto de detalle"
-        verbose_name_plural = "Fotos de detalles"
+    def __str__(self):
+        return f"Foto de {self.mueble.nombre}"
 
 # ==============================================================================
 # --- 3. PIEZAS Y RECETAS ---
@@ -85,83 +87,107 @@ class Receta(models.Model):
     cantidad = models.FloatField(default=1.0)
 
 # ==============================================================================
-# --- 4. CLIENTES (MODELO MEJORADO) ---
+# --- 4. CLIENTES ---
 # ==============================================================================
 class Cliente(models.Model):
     nombre = models.CharField(max_length=100, verbose_name="Nombres")
     apellido = models.CharField(max_length=100, verbose_name="Apellidos")
-    ruc_cedula = models.CharField(max_length=20, unique=True, verbose_name="RUC o Cédula")
+    cedula = models.CharField(max_length=20, unique=True, blank=True, null=True, verbose_name="Cédula")
+    ruc = models.CharField(max_length=20, unique=True, blank=True, null=True, verbose_name="RUC")
     telefono = models.CharField(max_length=20, blank=True, null=True, verbose_name="Teléfono")
-    
-    # --- Dirección Detallada ---
     ciudad = models.CharField(max_length=100, verbose_name="Ciudad")
     barrio = models.CharField(max_length=100, verbose_name="Barrio")
     calle_principal = models.CharField(max_length=150, verbose_name="Calle Principal")
     numero_casa = models.CharField(max_length=20, verbose_name="N° de Casa")
     calle_lateral_1 = models.CharField(max_length=150, blank=True, null=True, verbose_name="Calle Lateral 1")
     calle_lateral_2 = models.CharField(max_length=150, blank=True, null=True, verbose_name="Calle Lateral 2")
-    
-    # --- Referencia y Mapa ---
     referencia_ubicacion = models.TextField(blank=True, null=True, verbose_name="Referencia de Ubicación")
-    geolocalizacion = models.URLField(
-        blank=True, 
-        null=True, 
-        help_text="Pega aquí el enlace de Google Maps (URL)",
-        verbose_name="Enlace Google Maps"
-    )
+    geolocalizacion = models.URLField(blank=True, null=True, verbose_name="Enlace Google Maps")
+
+    @property
+    def identificacion(self):
+        if self.ruc: return f"RUC: {self.ruc}"
+        if self.cedula: return f"CI: {self.cedula}"
+        return "S/D"
 
     def __str__(self):
-        return f"{self.nombre} {self.apellido} - {self.ruc_cedula}"
+        return f"{self.nombre} {self.apellido} - {self.identificacion}"
+
+    def clean(self):
+        if not self.cedula and not self.ruc:
+            raise ValidationError("Debe ingresar al menos una Cédula o un RUC.")
 
     class Meta:
         verbose_name = "Cliente"
         verbose_name_plural = "Clientes"
+
 # ==============================================================================
-# --- 5. PEDIDOS (SÓLO INFORMACIÓN SOLICITADA) ---
+# --- 5. PEDIDOS ---
 # ==============================================================================
 class Pedido(models.Model):
-    cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE, verbose_name="Información del Cliente")
-    mueble = models.ForeignKey(Mueble, on_delete=models.CASCADE, verbose_name="Información del Mueble")
+    ESTADOS = (
+        ('pendiente', 'Pendiente'),
+        ('finalizado', 'Finalizado'),
+    )
+    
+    cliente = models.ForeignKey(Cliente, on_delete=models.CASCADE, verbose_name="Cliente")
+    mueble = models.ForeignKey(Mueble, on_delete=models.CASCADE, verbose_name="Mueble")
     fecha_pedido = models.DateField(auto_now_add=True, verbose_name="Fecha de Pedido")
+    
+    # Campo estirado de Orden de Trabajo
+    fecha_fin = models.DateTimeField(null=True, blank=True, verbose_name="Fecha de Finalización")
+    
+    estado = models.CharField(
+        max_length=15, 
+        choices=ESTADOS, 
+        default='pendiente',
+        verbose_name="Estado del Pedido"
+    )
 
     def __str__(self):
-        return f"Pedido: {self.cliente} - {self.mueble.nombre} ({self.fecha_pedido})"
+        return f"Pedido: {self.cliente} - {self.mueble.nombre} [{self.get_estado_display()}]"
 
     class Meta:
         verbose_name = "Pedido"
         verbose_name_plural = "Pedidos"
+
 # ==============================================================================
-# --- 6. PERSONAL (ESTRUCTURA COMPLETA) ---
+# --- 6. PERSONAL ---
 # ==============================================================================
 class Personal(models.Model):
-    # Vincular con el sistema de usuarios para el Login
-    user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True, verbose_name="Usuario de Sistema")
-    
-    nombre = models.CharField(max_length=100, verbose_name="Nombres")
-    apellido = models.CharField(max_length=100, verbose_name="Apellidos")
-    ruc_cedula = models.CharField(max_length=20, unique=True, verbose_name="RUC o Cédula")
-    telefono = models.CharField(max_length=20, verbose_name="Teléfono", blank=True, null=True)
-    email = models.EmailField(verbose_name="Correo Electrónico", blank=True, null=True)
-    direccion = models.CharField(max_length=255, verbose_name="Dirección", blank=True, null=True)
-    especialidad = models.CharField(max_length=100, verbose_name="Especialidad")
+    user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True, verbose_name="Usuario")
+    nombre = models.CharField(max_length=100, verbose_name='Nombres')
+    apellido = models.CharField(max_length=100, verbose_name='Apellidos')
+    cedula = models.CharField(max_length=20, unique=True, blank=True, null=True, verbose_name="Cédula")
+    ruc = models.CharField(max_length=20, unique=True, blank=True, null=True, verbose_name="RUC")
+    telefono = models.CharField(max_length=20, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    direccion = models.CharField(max_length=255, blank=True, null=True)
+    especialidad = models.CharField(max_length=100)
+
+    @property
+    def identificacion(self):
+        if self.ruc: return f"RUC: {self.ruc}"
+        if self.cedula: return f"CI: {self.cedula}"
+        return "S/D"
 
     def __str__(self):
-        return f"{self.nombre} {self.apellido} ({self.ruc_cedula}) - {self.especialidad}"
+        return f"{self.nombre} {self.apellido} ({self.identificacion})"
+
+    def clean(self):
+        if not self.cedula and not self.ruc:
+            raise ValidationError("El personal debe tener Cédula o RUC.")
 
     class Meta:
         verbose_name = "Personal"
         verbose_name_plural = "Personal"
 
 # ==============================================================================
-# --- 7. ÓRDENES DE TRABAJO (COORDINADAS) ---
+# --- 7. ÓRDENES DE TRABAJO ---
 # ==============================================================================
-from django.db import models
-from django.utils import timezone
-from django.core.exceptions import ValidationError
-
 class OrdenTrabajo(models.Model):
-    pedido = models.OneToOneField('Pedido', on_delete=models.CASCADE, verbose_name="Pedido Relacionado")
-    personal_asignado = models.ManyToManyField('Personal', verbose_name="Personal Asignado")
+    pedido = models.OneToOneField(Pedido, on_delete=models.CASCADE, verbose_name="Pedido Relacionado")
+    personal_asignado = models.ManyToManyField(Personal, verbose_name="Personal Asignado")
     
     corte = models.BooleanField(default=False, verbose_name="Corte")
     canteado = models.BooleanField(default=False, verbose_name="Canteado")
@@ -174,44 +200,116 @@ class OrdenTrabajo(models.Model):
     fecha_fin = models.DateTimeField(null=True, blank=True, verbose_name="Fecha de Finalización")
 
     def __str__(self):
-        return f"OT: {self.pedido}"
+        return f"OT: {self.pedido.mueble.nombre} ({self.pedido.cliente.nombre})"
+
+    def clean(self):
+        """
+        Validación de secuencia lógica para la tesis: 
+        No permite saltarse pasos en el proceso de fabricación.
+        """
+        if self.pk:
+            if self.canteado and not self.corte:
+                raise ValidationError("No se puede marcar 'Canteado' sin haber terminado el 'Corte'.")
+            
+            if self.armado and not self.canteado:
+                raise ValidationError("No se puede marcar 'Armado' sin haber terminado el 'Canteado'.")
+            
+            if self.limpieza and not self.armado:
+                raise ValidationError("No se puede marcar 'Limpieza' sin haber terminado el 'Armado'.")
+            
+            if self.empaquetado and not self.limpieza:
+                raise ValidationError("No se puede marcar 'Empaquetado' sin haber terminado la 'Limpieza'.")
 
     def save(self, *args, **kwargs):
-        # 1. LÓGICA AUTOMÁTICA DE FINALIZACIÓN
-        # Revisamos si todas las tareas están marcadas
+        # Ejecuta las validaciones de clean() antes de guardar
+        self.full_clean()
+
+        # 1. Finalización automática de la OT
         tareas = [self.corte, self.canteado, self.armado, self.limpieza, self.empaquetado]
+        self.finalizado = all(tareas)
         
-        if all(tareas):
-            self.finalizado = True
-            if not self.fecha_fin:
-                self.fecha_fin = timezone.now()
-        else:
-            self.finalizado = False
+        if self.finalizado and not self.fecha_fin:
+            self.fecha_fin = timezone.now()
+        elif not self.finalizado:
             self.fecha_fin = None
 
-        # 2. PROCESO DE STOCK (Antes de validar para asegurar que se ejecute)
+        # 2. Lógica de Stock y Sincronización con Pedido
         if self.pk:
-            # Traemos la orden de la base de datos para comparar
             orden_previa = OrdenTrabajo.objects.get(pk=self.pk)
-            # Accedemos al mueble a través del pedido (ajustar si el campo en Pedido se llama distinto)
-            mueble_relacionado = getattr(self.pedido, 'mueble', None)
+            mueble_relacionado = self.pedido.mueble
+            pedido_relacionado = self.pedido
 
-            if mueble_relacionado:
-                # Si ahora se marcó empaquetado y antes no estaba
-                if not orden_previa.empaquetado and self.empaquetado:
-                    mueble_relacionado.stock_disponible += 1
+            # SI SE MARCA COMO EMPAQUETADO (Cambio de False a True)
+            if not orden_previa.empaquetado and self.empaquetado:
+                # Sube stock
+                mueble_relacionado.stock_disponible += 1
+                mueble_relacionado.save()
+                
+                # Finaliza Pedido y COPIA LA FECHA
+                pedido_relacionado.estado = 'finalizado'
+                pedido_relacionado.fecha_fin = self.fecha_fin or timezone.now() # <--- Sincronización de fecha
+                pedido_relacionado.save()
+
+            # SI SE DESMARCA EMPAQUETADO (Cambio de True a False)
+            elif orden_previa.empaquetado and not self.empaquetado:
+                # Baja stock
+                if mueble_relacionado.stock_disponible > 0:
+                    mueble_relacionado.stock_disponible -= 1
                     mueble_relacionado.save()
-                # Si se desmarcó empaquetado
-                elif orden_previa.empaquetado and not self.empaquetado:
-                    if mueble_relacionado.stock_disponible > 0:
-                        mueble_relacionado.stock_disponible -= 1
-                        mueble_relacionado.save()
+                
+                # Regresa Pedido a Pendiente y BORRA LA FECHA
+                pedido_relacionado.estado = 'pendiente'
+                pedido_relacionado.fecha_fin = None # <--- Se limpia la fecha
+                pedido_relacionado.save()
 
-        # 3. GUARDADO FINAL
-        # Nota: Quitamos full_clean() de aquí para que el Admin maneje la validación
-        # y no bloquee el proceso de guardado del stock.
         super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = "Orden de Trabajo"
         verbose_name_plural = "Órdenes de Trabajo"
+# ==============================================================================
+# --- 8. FACTURACIÓN ---
+# ==============================================================================
+class Factura(models.Model):
+    CONDICIONES = (
+        ('contado', 'Contado'),
+        ('credito', 'Crédito'),
+    )
+
+    # Relación uno a uno con el pedido
+    pedido = models.OneToOneField(Pedido, on_delete=models.CASCADE, verbose_name="Pedido Relacionado")
+    
+    fecha_emision = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Emisión")
+    nro_factura = models.CharField(max_length=20, unique=True, verbose_name="Número de Factura")
+    condicion_venta = models.CharField(max_length=10, choices=CONDICIONES, default='contado', verbose_name="Condición")
+    
+    # Datos históricos (se guardan aquí por si el cliente o el mueble cambian en el futuro)
+    cliente_nombre = models.CharField(max_length=200, editable=False)
+    cliente_ruc = models.CharField(max_length=20, editable=False)
+    mueble_nombre = models.CharField(max_length=200, editable=False)
+    
+    # Montos
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=0, verbose_name="Precio Unitario")
+    iva_10 = models.DecimalField(max_digits=12, decimal_places=0, editable=False, verbose_name="IVA 10%")
+    total = models.DecimalField(max_digits=12, decimal_places=0, editable=False, verbose_name="Total Gs.")
+
+    def save(self, *args, **kwargs):
+        # Al crear la factura, estiramos los datos del pedido automáticamente
+        if not self.pk:
+            self.cliente_nombre = self.pedido.cliente.nombre
+            self.cliente_ruc = self.pedido.cliente.identificacion # o ruc si usas ese campo
+            self.mueble_nombre = self.pedido.mueble.nombre
+            self.precio_unitario = self.pedido.mueble.precio
+            
+            # Cálculo de IVA 10% (Precio dividido 11 es la fórmula contable en Paraguay)
+            self.total = self.precio_unitario
+            self.iva_10 = round(self.total / 11)
+            
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Factura {self.nro_factura} - {self.cliente_nombre}"
+
+    class Meta:
+        verbose_name = "Factura"
+        verbose_name_plural = "Facturas"

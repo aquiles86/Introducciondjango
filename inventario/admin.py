@@ -1,13 +1,14 @@
 from django.contrib import admin
+from django.utils.html import format_html
 from .models import Insumo, Mueble, FotoMueble, Pieza, Receta, Cliente, Pedido, Personal, OrdenTrabajo
 
-# Configuración para que las fotos aparezcan dentro del mueble
+# =============================================================
+# --- CONFIGURACIONES INLINE (PARA EDICIÓN RÁPIDA) ---
+# =============================================================
 class FotoMuebleInline(admin.TabularInline):
     model = FotoMueble
-    extra = 1  # Número de filas vacías que aparecen por defecto
-    fields = ['imagen', 'descripcion']
+    extra = 1
 
-# Configuración opcional para ver piezas y recetas también en la misma pantalla
 class PiezaInline(admin.TabularInline):
     model = Pieza
     extra = 1
@@ -16,112 +17,117 @@ class RecetaInline(admin.TabularInline):
     model = Receta
     extra = 1
 
+# =============================================================
+# --- ADMINISTRACIÓN DE MODELOS ---
+# =============================================================
+
 @admin.register(Mueble)
 class MuebleAdmin(admin.ModelAdmin):
     list_display = ('nombre', 'codigo', 'stock_disponible', 'precio_venta', 'costo_total_produccion')
     search_fields = ('nombre', 'codigo')
-    # Añadimos todos los inlines para una gestión centralizada
     inlines = [FotoMuebleInline, PiezaInline, RecetaInline]
 
 @admin.register(Insumo)
 class InsumoAdmin(admin.ModelAdmin):
     list_display = ('nombre', 'unidad_medida', 'precio_referencia')
+    search_fields = ('nombre',)
 
 @admin.register(Cliente)
 class ClienteAdmin(admin.ModelAdmin):
-    # Columnas que verás en la lista principal
-    list_display = ('nombre', 'apellido', 'ruc_cedula', 'telefono', 'ciudad', 'barrio')
-    search_fields = ('nombre', 'apellido', 'ruc_cedula', 'ciudad')
-    list_filter = ('ciudad', 'barrio') # Filtros laterales rápidos
+    # Mostramos la property 'identificacion' en la lista
+    list_display = ('nombre', 'apellido', 'identificacion', 'telefono', 'ciudad', 'barrio')
+    # Permitimos buscar por cualquiera de los dos documentos
+    search_fields = ('nombre', 'apellido', 'cedula', 'ruc', 'ciudad')
+    list_filter = ('ciudad', 'barrio')
 
-    # Organización del formulario de carga
     fieldsets = (
         ('Datos Personales', {
-            'fields': ('nombre', 'apellido', 'ruc_cedula', 'telefono')
+            'fields': ('nombre', 'apellido', 'cedula', 'ruc', 'telefono')
         }),
         ('Dirección de Entrega', {
-            'fields': (
-                'ciudad', 'barrio', 'calle_principal', 'numero_casa', 
-                'calle_lateral_1', 'calle_lateral_2'
-            )
+            'fields': ('ciudad', 'barrio', 'calle_principal', 'numero_casa', 'calle_lateral_1', 'calle_lateral_2')
         }),
-        ('Geolocalización y Ayudas', {
+        ('Ayudas para Logística', {
             'fields': ('referencia_ubicacion', 'geolocalizacion'),
-            'description': 'Información extra para que el transportista encuentre la casa.'
         }),
     )
-@admin.register(Pedido)
-class PedidoAdmin(admin.ModelAdmin):
-    # Columnas que verás al entrar a "Pedidos"
-    list_display = ('cliente','ruc_cedula', 'fecha_pedido', 'mueble')
-    # Buscador por nombre de cliente o mueble
-    search_fields = ('cliente__nombre', 'mueble__nombre','cliente__ruc_cedula')
-    # Filtro lateral por fecha
-    list_filter = ('fecha_pedido',)
-    def ruc_cedula(self, obj):
-                # Entra al cliente relacionado y trae su ruc_cedula
-                return obj.cliente.ruc_cedula
+
 @admin.register(Personal)
 class PersonalAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'apellido','user', 'ruc_cedula', 'especialidad', 'telefono')
-    search_fields = ('nombre', 'apellido', 'ruc_cedula', 'especialidad')
+    list_display = ('nombre', 'apellido', 'identificacion', 'especialidad', 'user')
+    search_fields = ('nombre', 'apellido', 'cedula', 'ruc', 'especialidad')
     list_filter = ('especialidad',)
     
     fieldsets = (
         ('Identificación', {
-            'fields': ('user', 'nombre', 'apellido', 'ruc_cedula')
+            'fields': ('user', 'nombre', 'apellido', 'cedula', 'ruc')
         }),
-        ('Contacto y Especialidad', {
+        ('Contacto y Cargo', {
             'fields': ('especialidad', 'telefono', 'email', 'direccion')
         }),
     )
+
+@admin.register(Pedido)
+class PedidoAdmin(admin.ModelAdmin):
+    # Agregamos 'fecha_fin' al list_display para ver cuándo terminó
+    list_display = ('id', 'cliente', 'ver_documento', 'mueble', 'fecha_pedido', 'fecha_fin', 'colorear_estado')
+    
+    # Filtro lateral actualizado con la fecha de finalización
+    list_filter = ('fecha_pedido', 'estado', 'fecha_fin')
+    
+    search_fields = ('cliente__nombre', 'cliente__cedula', 'cliente__ruc', 'mueble__nombre')
+    
+    # Ahora 'estado' y 'fecha_fin' son de solo lectura (los controla el Taller)
+    readonly_fields = ('estado', 'fecha_fin')
+
+    def ver_documento(self, obj):
+        # Asumiendo que 'identificacion' es una propiedad o campo en tu modelo Cliente
+        return obj.cliente.identificacion if hasattr(obj.cliente, 'identificacion') else "N/A"
+    ver_documento.short_description = 'CI / RUC'
+
+    def colorear_estado(self, obj):
+        if obj.estado == 'finalizado':
+            color = '#28a745' # Verde
+            texto = 'TERMINADO'
+        else:
+            color = '#fd7e14' # Naranja
+            texto = 'PENDIENTE'
+        return format_html(
+            '<b style="color: {};">{}</b>',
+            color,
+            texto,
+        )
+    colorear_estado.short_description = 'Estado del Pedido'
+
 @admin.register(OrdenTrabajo)
 class OrdenTrabajoAdmin(admin.ModelAdmin):
-    # 1. Columnas en la lista principal
+    # Agregamos 'fecha_fin' a la tabla de Órdenes de Trabajo
     list_display = (
-        'pedido', 
-        'fecha_inicio', 
-        'fecha_fin', 
-        'finalizado', 
-        'corte', 
-        'canteado', 
-        'armado', 
-        'limpieza', 
-        'empaquetado'
+        'pedido', 'fecha_inicio', 'fecha_fin', 'finalizado', 
+        'corte', 'canteado', 'armado', 'limpieza', 'empaquetado'
     )
     
-    # 2. Filtros laterales
-    list_filter = ('fecha_inicio', 'personal_asignado', 'finalizado')
-    filter_horizontal = ('personal_asignado',)
+    # Mantenemos las fechas y el estado finalizado como solo lectura
+    readonly_fields = ('finalizado', 'fecha_inicio', 'fecha_fin')
 
-    # 3. BUSCADOR (Lo nuevo): Permite buscar por cliente, mueble o RUC
-    # Usamos el doble guion bajo (__) para navegar entre las tablas relacionadas
-    search_fields = (
-        'pedido__cliente__nombre',    # Busca en el nombre del cliente
-        'pedido__cliente__ruc_cedula',# Busca en el RUC del cliente
-        'pedido__mueble__nombre',      # Busca en el nombre del mueble
-    )
-
-    # 4. Campos de solo lectura
-    readonly_fields = ('fecha_inicio',)
-
-    # 5. Organización del formulario de edición
     fieldsets = (
-        ('Registro de Tiempo', {
-            'fields': ('fecha_inicio',) 
-        }),
-        ('Asignación de Trabajo', {
+        ('Asignación', {
             'fields': ('pedido', 'personal_asignado')
         }),
-        ('Estado de Tareas', {
-            'fields': (
-                'corte', 
-                'canteado', 
-                'armado', 
-                'limpieza', 
-                'empaquetado', 
-                'finalizado', 
-                'fecha_fin'
-            )
+        ('Progreso del Taller', {
+            'fields': ('corte', 'canteado', 'armado', 'limpieza', 'empaquetado', 'finalizado')
+        }),
+        ('Registro de Tiempos', {
+            'fields': ('fecha_inicio', 'fecha_fin')
         }),
     )
+    
+    filter_horizontal = ('personal_asignado',)
+    
+    search_fields = (
+        'pedido__cliente__nombre', 
+        'pedido__cliente__cedula', 
+        'pedido__cliente__ruc', 
+        'pedido__mueble__nombre'
+    )
+
