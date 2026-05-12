@@ -283,7 +283,7 @@ class Factura(models.Model):
     nro_factura = models.CharField(max_length=20, unique=True, verbose_name="Número de Factura")
     condicion_venta = models.CharField(max_length=10, choices=CONDICIONES, default='contado', verbose_name="Condición")
     
-    # Datos históricos (se guardan aquí por si el cliente o el mueble cambian en el futuro)
+    # Datos históricos
     cliente_nombre = models.CharField(max_length=200, editable=False)
     cliente_ruc = models.CharField(max_length=20, editable=False)
     mueble_nombre = models.CharField(max_length=200, editable=False)
@@ -294,17 +294,24 @@ class Factura(models.Model):
     total = models.DecimalField(max_digits=12, decimal_places=0, editable=False, verbose_name="Total Gs.")
 
     def save(self, *args, **kwargs):
-        # Al crear la factura, estiramos los datos del pedido automáticamente
-        if not self.pk:
-            self.cliente_nombre = self.pedido.cliente.nombre
-            self.cliente_ruc = self.pedido.cliente.identificacion # o ruc si usas ese campo
-            self.mueble_nombre = self.pedido.mueble.nombre
-            self.precio_unitario = self.pedido.mueble.precio
+        # Al crear la factura por primera vez
+        if not self.pk: 
+            # Aquí unimos Nombre y Apellido
+            self.cliente_nombre = f"{self.pedido.cliente.nombre} {self.pedido.cliente.apellido}"
             
-            # Cálculo de IVA 10% (Precio dividido 11 es la fórmula contable en Paraguay)
+            self.cliente_ruc = self.pedido.cliente.identificacion
+            self.mueble_nombre = self.pedido.mueble.nombre
+            self.precio_unitario = self.pedido.mueble.precio_venta
+            
             self.total = self.precio_unitario
             self.iva_10 = round(self.total / 11)
-            
+
+            # Lógica de stock
+            mueble = self.pedido.mueble
+            if mueble.stock_disponible > 0:
+                mueble.stock_disponible -= 1
+                mueble.save()
+        
         super().save(*args, **kwargs)
 
     def __str__(self):

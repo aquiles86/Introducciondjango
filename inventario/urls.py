@@ -14,4 +14,5 @@ urlpatterns = [
     
     # 4. El Logout que evita que vuelvas al panel gris de admin
     path('logout/', auth_views.LogoutView.as_view(), name='salir'),
+    path('factura/<int:factura_id>/', views.factura_detalle_view, name='factura_detalle'),
 ]

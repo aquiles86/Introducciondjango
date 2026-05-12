@@ -1,7 +1,9 @@
 from django.contrib import admin
+from django.utils import timezone
 from django.utils.html import format_html
-from .models import Insumo, Mueble, FotoMueble, Pieza, Receta, Cliente, Pedido, Personal, OrdenTrabajo
-
+from django.urls import reverse
+from .models import Insumo, Mueble, FotoMueble, Pieza, Receta, Cliente, Pedido, Personal, OrdenTrabajo, Factura
+from django.contrib import admin, messages
 # =============================================================
 # --- CONFIGURACIONES INLINE (PARA EDICIÓN RÁPIDA) ---
 # =============================================================
@@ -69,19 +71,50 @@ class PersonalAdmin(admin.ModelAdmin):
 
 @admin.register(Pedido)
 class PedidoAdmin(admin.ModelAdmin):
-    # Agregamos 'fecha_fin' al list_display para ver cuándo terminó
+    # 1. Configuración de la lista
     list_display = ('id', 'cliente', 'ver_documento', 'mueble', 'fecha_pedido', 'fecha_fin', 'colorear_estado')
-    
-    # Filtro lateral actualizado con la fecha de finalización
     list_filter = ('fecha_pedido', 'estado', 'fecha_fin')
-    
     search_fields = ('cliente__nombre', 'cliente__cedula', 'cliente__ruc', 'mueble__nombre')
-    
-    # Ahora 'estado' y 'fecha_fin' son de solo lectura (los controla el Taller)
     readonly_fields = ('estado', 'fecha_fin')
 
+    # 2. Agregar la Acción de Facturación
+    actions = ['generar_factura_accion']
+
+    def generar_factura_accion(self, request, queryset):
+        facturadas = 0
+        errores = 0
+
+        for pedido in queryset:
+            # Regla de negocio: Solo facturar pedidos FINALIZADOS que no tengan factura aún
+            if pedido.estado == 'finalizado':
+                if not hasattr(pedido, 'factura'):
+                    # Generamos un número correlativo simple: 001-001-XXXXXX
+                    conteo = Factura.objects.count() + 1
+                    nro = f"001-001-{conteo:06d}"
+                    
+                    Factura.objects.create(
+                        pedido=pedido,
+                        nro_factura=nro,
+                        condicion_venta='contado'
+                    )
+                    facturadas += 1
+                else:
+                    # Ya tiene factura
+                    errores += 1
+            else:
+                # No está terminado en el taller
+                errores += 1
+
+        # Mensajes de retroalimentación
+        if facturadas > 0:
+            self.message_user(request, f"✅ ¡Éxito! Se han generado {facturadas} factura(s).", messages.SUCCESS)
+        if errores > 0:
+            self.message_user(request, f"⚠️ Atención: {errores} pedido(s) fueron ignorados (ya tienen factura o no están TERMINADOS).", messages.WARNING)
+
+    generar_factura_accion.short_description = "🧾 Generar Factura de los pedidos seleccionados"
+
+    # 3. Funciones de visualización
     def ver_documento(self, obj):
-        # Asumiendo que 'identificacion' es una propiedad o campo en tu modelo Cliente
         return obj.cliente.identificacion if hasattr(obj.cliente, 'identificacion') else "N/A"
     ver_documento.short_description = 'CI / RUC'
 
@@ -101,13 +134,12 @@ class PedidoAdmin(admin.ModelAdmin):
 
 @admin.register(OrdenTrabajo)
 class OrdenTrabajoAdmin(admin.ModelAdmin):
-    # Agregamos 'fecha_fin' a la tabla de Órdenes de Trabajo
+    # 1. Configuración de la tabla
     list_display = (
         'pedido', 'fecha_inicio', 'fecha_fin', 'finalizado', 
         'corte', 'canteado', 'armado', 'limpieza', 'empaquetado'
     )
     
-    # Mantenemos las fechas y el estado finalizado como solo lectura
     readonly_fields = ('finalizado', 'fecha_inicio', 'fecha_fin')
 
     fieldsets = (
@@ -131,3 +163,65 @@ class OrdenTrabajoAdmin(admin.ModelAdmin):
         'pedido__mueble__nombre'
     )
 
+    # 2. Lógica para sincronizar con Pedido al guardar en el Admin
+    def save_model(self, request, obj, form, change):
+        # Verificamos si todos los procesos técnicos están marcados
+        procesos = [obj.corte, obj.canteado, obj.armado, obj.limpieza, obj.empaquetado]
+        
+        if all(procesos):
+            # Si todo está marcado, finalizamos la orden
+            obj.finalizado = True
+            if not obj.fecha_fin:
+                obj.fecha_fin = timezone.now()
+            
+            # ACTUALIZAMOS EL PEDIDO A FINALIZADO
+            pedido = obj.pedido
+            pedido.estado = 'finalizado'
+            pedido.fecha_fin = obj.fecha_fin
+            pedido.save()
+        else:
+            # Si falta algún paso, la orden y el pedido siguen pendientes
+            obj.finalizado = False
+            obj.fecha_fin = None
+            
+            pedido = obj.pedido
+            pedido.estado = 'pendiente'
+            # No borramos la fecha_fin del pedido si ya existía, o puedes ponerla None
+            pedido.save()
+
+        # Guardamos la Orden de Trabajo
+        super().save_model(request, obj, form, change)
+
+@admin.register(Factura)
+class FacturaAdmin(admin.ModelAdmin):
+    # Agregamos 'ver_factura' al listado para que aparezca el botón
+    list_display = ('nro_factura', 'cliente_nombre', 'mueble_nombre', 'total', 'fecha_emision', 'ver_factura')
+    
+    list_filter = ('fecha_emision', 'condicion_venta')
+    
+    search_fields = ('nro_factura', 'cliente_nombre', 'cliente_ruc')
+    
+    # Todos estos campos se llenan solos al crear la factura desde el pedido
+    readonly_fields = (
+        'pedido', 'nro_factura', 'cliente_nombre', 'cliente_ruc', 
+        'mueble_nombre', 'precio_unitario', 'iva_10', 'total', 'fecha_emision'
+    )
+
+    def ver_factura(self, obj):
+        """
+        Genera un botón que redirige a la vista personalizada de la factura
+        'factura_detalle' es el nombre que definimos en urls.py
+        """
+        try:
+            url = reverse('factura_detalle', args=[obj.id])
+            return format_html(
+                '<a class="button" href="{}" target="_blank" '
+                'style="background-color: #447e9b; color: white; padding: 5px 10px; border-radius: 4px; text-decoration: none;">'
+                'Ver/Imprimir</a>', 
+                url
+            )
+        except:
+            return "Ruta no encontrada"
+
+    # Título de la columna en el admin
+    ver_factura.short_description = "Acción"

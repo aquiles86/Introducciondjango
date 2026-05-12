@@ -5,6 +5,8 @@ from django.contrib.auth import logout
 from .models import OrdenTrabajo, Personal
 from django.contrib import messages
 from django.core.exceptions import ValidationError
+from django.shortcuts import render, get_object_or_404
+from .models import Factura
 # ==============================================================================
 # --- 1. PANEL DE TAREAS DEL TALLER ---
 # ==============================================================================
@@ -67,3 +69,7 @@ def salir_limpio(request):
     """
     logout(request)
     return redirect('/inventario/login/')
+
+def factura_detalle_view(request, factura_id):
+    factura = get_object_or_404(Factura, id=factura_id)
+    return render(request, 'inventario/factura_detalle.html', {'factura': factura})
